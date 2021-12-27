@@ -1,0 +1,118 @@
+Cách dùng:
+- Tạo mới 1 dữ liệu trắng cùng phiên bản dữ liệu lỗi trên cùng 1 instance SQL
+- Đổi tên KETOAN2017_CD thành tên dữ liệu Lỗi
+- Đổi tên 2017_R12 thành tên dữ liệu trắng vừa tạo
+- Run script để lấy dữ liệu từ KETOAN2017_CD sang 2017_R12
+- Nếu thành công thì 2017_R12 đã có đủ dữ liệu từ KETOAN2017_CD
+- Nếu lỗi bảng nào thì bỏ vào danh sách loại trừ bên dưới và dùng công cụ Recovery để lấy lại dữ liệu bị lỗi
+- Nếu lỗi FK thì sửa dữ liệu rồi chạy lại
+ 
+* KETOAN2017_CD: Tên dữ liệu lỗi vật lý
+* 2017_R12: Tên dữ liệu trắng cùng phiên bản cùng chế độ
+* */
+ 
+USE [2017_R12]
+GO
+EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL'
+GO
+ 
+--Disable các trigger
+--EXEC sp_msforeachtable 'ALTER TABLE ? DISABLE TRIGGER ALL'
+--GO
+ 
+DECLARE @sql NVARCHAR(MAX)
+DECLARE @TableName NVARCHAR(255)
+DECLARE @object_id INT
+DECLARE @col_Insert NVARCHAR(MAX)
+--DECLARE @col_Sort NVARCHAR(MAX)
+DECLARE TableCursor CURSOR  
+FOR
+    SELECT object_id, NAME
+    FROM   sys.tables
+    WHERE   NAME = 'SYSDBOption' OR (NAME NOT LIKE 'RLT_%' AND NAME NOT LIKE 'FR_%' AND NAME NOT LIKE 'TT28_FR%' AND NAME NOT LIKE 'FRU_%' AND NAME NOT LIKE 'RPT_%' AND NAME NOT LIKE '%Ledger' AND NAME NOT LIKE 'SYS%' AND NAME NOT LIKE 'Config%' 
+            AND NAME NOT IN (N'Location','ImportItem','ImportTable','ImportColumn','ConvertMapping','DataBandSortCollection','MSreplication_options','spt_fallback_db','spt_fallback_dev','spt_fallback_usg','spt_monitor','spt_values')
+            AND NAME NOT IN ('','','')) --Thêm các bảng loại trừ vào đây  
+    ORDER BY NAME 
+OPEN TableCursor
+FETCH NEXT FROM TableCursor INTO @object_id, @TableName
+WHILE @@FETCH_STATUS=0
+BEGIN
+    SET @col_Insert = SPACE(0)
+    SET @sql = SPACE(0)
+    SELECT  @col_Insert = (CASE WHEN ISNULL(@col_Insert,'') = SPACE(0) THEN '' ELSE ISNULL(@col_Insert,'') + ', ' END) + '[' +Cl.name + ']'
+    FROM    sys.tables TB
+            INNER JOIN sys.[columns] CL ON CL.[object_id] = TB.[object_id]
+            --LEFT JOIN sys.identity_columns ID ON ID.[object_id] = TB.[object_id] AND ID.column_id = CL.column_id
+    WHERE   TB.name = @TableName
+            AND CL.user_type_id <> 189 --Loại trừ column kiểu Timestamp
+            --AND ID.name IS NULL
+    
+    --SET @col_Sort = SPACE(0)
+    --SELECT    @col_Sort = (CASE WHEN ISNULL(@col_Sort,'') = SPACE(0) THEN '' ELSE ISNULL(@col_Sort,'') + ', ' END) + Cl.name
+    --FROM  sys.tables TB
+    --      INNER JOIN sys.[columns] CL ON CL.[object_id] = TB.[object_id]
+    --      INNER JOIN sys.identity_columns ID ON ID.[object_id] = TB.[object_id] AND ID.column_id = CL.column_id
+    --WHERE TB.name = @TableName
+    
+    SET @sql = 'ALTER TABLE '+@TableName+' DISABLE TRIGGER ALL'
+    
+    
+    --Nếu là bảng có cột IDENTITY thì set IDENTITY_INSERT ON
+    IF EXISTS(SELECT * FROM sys.columns WHERE object_id= @object_id AND is_identity=1)
+    SET @sql = @sql + '
+SET IDENTITY_INSERT '+@TableName+' ON'
+    
+    IF @TableName NOT IN ('CAReceiptPaymentList','INInwardOutwardList','BADepositWithdrawList')
+    SET @sql = @sql + '
+DELETE FROM [2017_R12].dbo.' + @TableName +N'
+INSERT INTO [2017_R12].dbo.' + @TableName + '(' + @col_Insert + ') SELECT ' + @col_Insert + ' FROM [KETOAN2017_CD].dbo.' + @TableName
+    ELSE
+    SET @sql = @sql + '
+DELETE FROM [2017_R12].dbo.' + @TableName +N'
+INSERT INTO [2017_R12].dbo.' + @TableName + ' SELECT * FROM [KETOAN2017_CD].dbo.' + @TableName
+    
+    --Nếu là bảng có cột IDENTITY thì set IDENTITY_INSERT OFF sau khi insert
+    IF EXISTS(SELECT * FROM sys.columns WHERE object_id= @object_id AND is_identity=1)
+    BEGIN
+        --PRINT '-------------------------------------------'
+        --PRINT @TableName + CAST(@object_id as nvarchar (100))
+    SET @sql = @sql + '
+SET IDENTITY_INSERT '+@TableName+' OFF'
+    END 
+    
+    --Bật lại Trigger cho các bảng loại trừ các bảng sau          
+    IF (@TableName NOT IN  ('MSC_Permission','MSC_SubSystem'))          
+                SET @sql = @sql+ N'
+ALTER TABLE '+@TableName+' ENABLE TRIGGER ALL
+ 
+ 
+'
+    
+    PRINT (@sql)                 
+    EXEC (@sql)                 
+    FETCH NEXT FROM TableCursor INTO @object_id, @TableName
+END
+CLOSE TableCursor
+DEALLOCATE TableCursor
+GO
+USE [2017_R12]
+GO
+/*Sửa một vài lỗi trước khi enable contrains*/
+ 
+-- Sửa lỗi cho SME2015
+IF EXISTS (SELECT NAME AS TableName FROM sys.tables WHERE name='SYSDBInfo')
+BEGIN
+    DELETE SOR FROM SaleOutwardReference SOR LEFT JOIN SAVoucher SA ON SA.RefID = SOR.SAVoucherRefID WHERE SA.RefID IS NULL
+    DELETE SOR FROM SaleOutwardReference SOR LEFT JOIN INOutward INO ON INO.RefID = SOR.INOutwardRefID WHERE INO.RefID IS NULL
+    DELETE SOD FROM SaleOutwardReferenceDetail SOD LEFT JOIN SAVoucherDetail SA ON SOD.SAVoucherRefDetailID = SA.RefDetailID WHERE SA.RefDetailID IS NULL
+    DELETE SOD FROM SaleOutwardReferenceDetail SOD LEFT JOIN INOutwardDetail INO ON SOD.INOutwardRefDetailID = INO.RefDetailID WHERE INO.RefDetailID IS NULL        
+    DELETE SIR FROM SAInvoiceReference SIR LEFT JOIN SAVoucher SA ON SIR.VoucherRefID = SA.RefID WHERE SA.RefID IS NULL 
+    DELETE SIR FROM SAInvoiceReference SIR LEFT JOIN SAInvoice SA ON SIR.SAInvoiceRefID = SA.RefID WHERE SA.RefID IS NULL   
+END
+ 
+GO
+ 
+/*Enable contrains*/
+--Nếu lỗi dòng này thì phải kiểm tra lại bảng nào bị lỗi Foreign key thì sửa
+EXEC sp_msforeachtable 'ALTER TABLE ? WITH CHECK CHECK CONSTRAINT ALL'
+GO
