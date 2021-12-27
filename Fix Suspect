@@ -1,0 +1,17 @@
+-- sp_resetstatus turns off the "suspect" flag on a database
+EXEC sp_resetstatus [DatabaseName]
+ 
+-- Marking database READ_ONLY, disable logging,
+-- and limiting access only to members of the sysadmin fixed server role
+ALTER DATABASE [DatabaseName] SET EMERGENCY
+ 
+-- Checks the logical and physical integrity of all the objects in the specified database
+DBCC checkdb([DatabaseName])
+ 
+-- This query will rollback any transaction which is running on that database
+-- and bring SQL Server database in a "single user" mode
+ALTER DATABASE [DatabaseName] SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+DBCC CheckDB ([DatabaseName], REPAIR_ALLOW_DATA_LOSS)
+ 
+-- Set database accessibility to it's original state, allowing all logins
+ALTER DATABASE [DatabaseName] SET MULTI_USER
